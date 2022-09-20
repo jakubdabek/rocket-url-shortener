@@ -15,6 +15,7 @@ extern crate rocket;
 
 // Async Mutex to not block the executor during requests,
 // although locks should be held for short enough that it wouldn't matter.
+// Could also consider `RwLock`, as `open` only needs read-only access.
 type UriStore = Mutex<HashMap<u64, Absolute<'static>>>;
 
 #[post("/shorten", data = "<url>")]
@@ -22,6 +23,7 @@ async fn shorten(
     url: String,
     uri_store: &State<UriStore>,
 ) -> Result<String, BadRequest<&'static str>> {
+    // Could extend with additional error handling, e.g. only `https`, whitelist, etc.
     let url = Absolute::parse_owned(url).map_err(|_| BadRequest(Some("Invalid URL")))?;
     let url = url.into_normalized();
     let key = {
@@ -39,16 +41,17 @@ async fn shorten(
         }
     };
 
-    Ok(format!("http://localhost:8000{}", uri!(open(id = key))))
+    Ok(uri!("http://localhost:8000", open(id = key)).to_string())
 }
 
 #[get("/open/<id>")]
-async fn open(id: u64, uri_store: &State<UriStore>) -> Result<Redirect, NotFound<&'static str>> {
+async fn open(id: u64, uri_store: &State<UriStore>) -> Result<Redirect, Status> {
     let uri = uri_store
         .lock()
         .await
         .get(&id)
-        .ok_or(NotFound("Given link doesn't exist"))?
+        // redirects to a global error handler/catcher
+        .ok_or(Status::NotFound)?
         .clone();
     Ok(Redirect::to(uri))
 }
@@ -112,6 +115,9 @@ mod test {
     fn invalid_id() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
         let response = client.get(uri!(super::open(id = 123))).dispatch();
+        assert_eq!(response.status(), Status::NotFound);
+
+        let response = client.get(uri!("/open/abc")).dispatch();
         assert_eq!(response.status(), Status::NotFound);
     }
 }
