@@ -4,11 +4,8 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use rand::prelude::*;
 use rocket::{
-    http::uri::Absolute,
-    response::{
-        status::{BadRequest, NotFound},
-        Redirect,
-    },
+    http::{uri::Absolute, Status},
+    response::{status::BadRequest, Redirect},
     tokio::sync::Mutex,
     State,
 };
@@ -61,4 +58,60 @@ fn rocket() -> _ {
     rocket::build()
         .mount("/", routes![shorten, open])
         .manage(UriStore::default())
+}
+
+#[cfg(test)]
+mod test {
+    use super::rocket;
+    use rocket::http::uri::Absolute;
+    use rocket::http::Status;
+    use rocket::local::blocking::Client;
+
+    #[test]
+    fn open() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let response = client
+            .post(uri!(super::shorten))
+            .body("https://github.com/SergioBenitez/Rocket")
+            .dispatch();
+        assert_eq!(response.status(), Status::Ok);
+        let url = response.into_string().unwrap();
+        let url = Absolute::parse(&url).unwrap();
+
+        assert_eq!(url.authority().unwrap().host(), "localhost");
+        assert_eq!(url.authority().unwrap().port(), Some(8000));
+
+        let id = url
+            .path()
+            .as_str()
+            .strip_prefix("/open/")
+            .expect("wrong path prefix")
+            .parse::<u64>()
+            .expect("invalid id returned");
+
+        let response = client.get(uri!(super::open(id = id))).dispatch();
+        assert_eq!(response.status(), Status::SeeOther);
+
+        let response = client
+            .get(uri!(super::open(id = id.wrapping_add(1))))
+            .dispatch();
+        assert_eq!(response.status(), Status::NotFound);
+    }
+
+    #[test]
+    fn invalid_url() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        for url in ["/SergioBenitez/Rocket", "*", "?id=1"] {
+            let response = client.post(uri!(super::shorten)).body(url).dispatch();
+            assert_eq!(response.status(), Status::BadRequest);
+            assert!(response.into_string().unwrap().contains("Invalid URL"));
+        }
+    }
+
+    #[test]
+    fn invalid_id() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let response = client.get(uri!(super::open(id = 123))).dispatch();
+        assert_eq!(response.status(), Status::NotFound);
+    }
 }
