@@ -3,7 +3,15 @@
 use std::collections::{hash_map::Entry, HashMap};
 
 use rand::prelude::*;
-use rocket::{http::uri::Absolute, response::Redirect, tokio::sync::Mutex, State};
+use rocket::{
+    http::uri::Absolute,
+    response::{
+        status::{BadRequest, NotFound},
+        Redirect,
+    },
+    tokio::sync::Mutex,
+    State,
+};
 
 #[macro_use]
 extern crate rocket;
@@ -13,8 +21,12 @@ extern crate rocket;
 type UriStore = Mutex<HashMap<u64, Absolute<'static>>>;
 
 #[post("/shorten", data = "<url>")]
-async fn shorten(url: String, uri_store: &State<UriStore>) -> Result<String, String> {
-    let url = Absolute::parse_owned(url).map_err(|e| e.to_string())?;
+async fn shorten(
+    url: String,
+    uri_store: &State<UriStore>,
+) -> Result<String, BadRequest<&'static str>> {
+    let url = Absolute::parse_owned(url).map_err(|_| BadRequest(Some("Invalid URL")))?;
+    let url = url.into_normalized();
     let key = {
         let mut uri_store = uri_store.lock().await;
         let rng = &mut thread_rng();
@@ -30,16 +42,16 @@ async fn shorten(url: String, uri_store: &State<UriStore>) -> Result<String, Str
         }
     };
 
-    Ok(format!("http://localhost:8000/open/{key}"))
+    Ok(format!("http://localhost:8000{}", uri!(open(id = key))))
 }
 
 #[get("/open/<id>")]
-async fn open(id: u64, uri_store: &State<UriStore>) -> Result<Redirect, &'static str> {
+async fn open(id: u64, uri_store: &State<UriStore>) -> Result<Redirect, NotFound<&'static str>> {
     let uri = uri_store
         .lock()
         .await
         .get(&id)
-        .ok_or("Given link doesn't exist")?
+        .ok_or(NotFound("Given link doesn't exist"))?
         .clone();
     Ok(Redirect::to(uri))
 }
