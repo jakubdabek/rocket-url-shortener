@@ -6,6 +6,7 @@ use rand::prelude::*;
 use rocket::{
     http::{uri::Absolute, Status},
     response::{status::BadRequest, Redirect},
+    serde::json::Json,
     tokio::sync::Mutex,
     State,
 };
@@ -18,11 +19,26 @@ extern crate rocket;
 // Could also consider `RwLock`, as `open` only needs read-only access.
 type UriStore = Mutex<HashMap<u64, Absolute<'static>>>;
 
+#[derive(Debug, Default)]
+struct RequestCounter(Mutex<HashMap<&'static str, usize>>);
+
+impl RequestCounter {
+    async fn add(&self, name: &'static str) {
+        *self.0.lock().await.entry(name).or_default() += 1;
+    }
+
+    async fn all(&self) -> HashMap<&'static str, usize> {
+        self.0.lock().await.clone()
+    }
+}
+
 #[post("/shorten", data = "<url>")]
 async fn shorten(
     url: String,
     uri_store: &State<UriStore>,
+    request_counter: &State<RequestCounter>,
 ) -> Result<String, BadRequest<&'static str>> {
+    request_counter.add("shorten").await;
     // Could extend with additional error handling, e.g. only `https`, whitelist, etc.
     let url = Absolute::parse_owned(url).map_err(|_| BadRequest(Some("Invalid URL")))?;
     let url = url.into_normalized();
@@ -45,7 +61,12 @@ async fn shorten(
 }
 
 #[get("/open/<id>")]
-async fn open(id: u64, uri_store: &State<UriStore>) -> Result<Redirect, Status> {
+async fn open(
+    id: u64,
+    uri_store: &State<UriStore>,
+    request_counter: &State<RequestCounter>,
+) -> Result<Redirect, Status> {
+    request_counter.add("open").await;
     let uri = uri_store
         .lock()
         .await
@@ -56,11 +77,17 @@ async fn open(id: u64, uri_store: &State<UriStore>) -> Result<Redirect, Status> 
     Ok(Redirect::to(uri))
 }
 
+#[get("/counters")]
+async fn counters(request_counter: &State<RequestCounter>) -> Json<HashMap<&'static str, usize>> {
+    Json(request_counter.all().await)
+}
+
 #[launch]
 fn rocket() -> _ {
     rocket::build()
-        .mount("/", routes![shorten, open])
+        .mount("/", routes![shorten, open, counters])
         .manage(UriStore::default())
+        .manage(RequestCounter::default())
 }
 
 #[cfg(test)]
